@@ -62,6 +62,8 @@ add_subdirectory(plugins/input_opencv)
 add_subdirectory(plugins/input_raspicam)
 add_subdirectory(plugins/input_ptp2)
 add_subdirectory(plugins/input_uvc)
+add_subdirectory(plugins/input_udp)
+add_subdirectory(plugins/input_tcp)
 
 #
 # Output plugins
