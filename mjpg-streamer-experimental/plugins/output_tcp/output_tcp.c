@@ -47,12 +47,12 @@
 static pthread_t worker;
 static globals *pglobal;
 static int fd, delay, ringbuffer_size = -1, ringbuffer_exceed = 0, max_frame_size;
-static char *folder = "/tmp";
+static char *host = "127.0.0.1";
 static unsigned char *frame = NULL;
 static char *command = NULL;
 static int input_number = 0;
-static char *mjpgFileName = NULL;
 static char *linkFileName = NULL;
+static int port = 8888;
 
 /******************************************************************************
 Description.: print a help message
@@ -65,8 +65,8 @@ void help(void)
             " Help for output plugin..: "OUTPUT_PLUGIN_NAME"\n" \
             " ---------------------------------------------------------------\n" \
             " The following parameters can be passed to this plugin:\n\n" \
-            " [-f | --folder ]........: folder to save pictures\n" \
-            " [-m | --mjpeg ].........: save the frames to an mjpg file \n" \
+            " [-o | --host ]........: host to send\n" \
+            " [-p | --port ].........: port number\n" \
             " [-l | --link ]..........: link the last picture in ringbuffer as this fixed named file\n" \
             " [-d | --delay ].........: delay after saving pictures in ms\n" \
             " [-i | --input ].........: read frames from the specified input plugin\n" \
@@ -86,10 +86,6 @@ void worker_cleanup(void *arg)
 {
     static unsigned char first_run = 1;
 
-    if (mjpgFileName != NULL) {
-        close(fd);
-    }
-
     if(!first_run) {
         DBG("already cleaned up resources\n");
         return;
@@ -104,96 +100,6 @@ void worker_cleanup(void *arg)
     close(fd);
 }
 
-/******************************************************************************
-Description.: compares a directory entry with a pattern
-Input Value.: directory entry
-Return Value: 0 if string do not match, 1 if they match
-******************************************************************************/
-int check_for_filename(const struct dirent *entry)
-{
-    int rc;
-
-    int year, month, day, hour, minute, second;
-    unsigned long long number;
-
-    /*
-     * try to scan the string using scanf
-     * I would like to use a define for this format string later...
-     */
-    rc = sscanf(entry->d_name, "%d_%d_%d_%d_%d_%d_picture_%09llu.jpg", &year, \
-                &month, \
-                &day, \
-                &hour, \
-                &minute, \
-                &second, \
-                &number);
-
-    DBG("%s, rc is %d (%d, %d, %d, %d, %d, %d, %llu)\n", entry->d_name, \
-        rc, \
-        year, \
-        month, \
-        day, \
-        hour, \
-        minute, \
-        second, \
-        number);
-
-    /* if scanf could find all values, it matches our filenames */
-    if(rc != 7) return 0;
-
-    return 1;
-}
-
-/******************************************************************************
-Description.: delete oldest files, just keep "size" most recent files
-              This funtion MAY delete the wrong files if the time is not valid
-Input Value.: how many files to keep
-Return Value: -
-******************************************************************************/
-void maintain_ringbuffer(int size)
-{
-    struct dirent **namelist;
-    int n, i;
-    char buffer[1<<16];
-
-    /* do nothing if ringbuffer is not set or wrong value is set */
-    if(size < 0) return;
-
-    /* get a sorted list of directory items */
-    n = scandir(folder, &namelist, check_for_filename, alphasort);
-    if(n < 0) {
-        perror("scandir");
-        return;
-    }
-
-    DBG("found %d directory entries\n", n);
-
-    /* delete the first (thus oldest) number of files */
-    for(i = 0; i < (n - size); i++) {
-
-        /* put together the folder name and the directory item */
-        snprintf(buffer, sizeof(buffer), "%s/%s", folder, namelist[i]->d_name);
-
-        DBG("delete: %s\n", buffer);
-
-        /* mark item for deletion */
-        if(unlink(buffer) == -1) {
-            perror("could not delete file");
-        }
-
-        /* free allocated memory for name */
-        free(namelist[i]);
-    }
-
-    /* keep the rest, but we still have to free every result */
-    for(i = MAX(n - size, 0); i < n; i++) {
-        DBG("keep: %s\n", namelist[i]->d_name);
-        free(namelist[i]);
-    }
-
-    /* free last just allocated resources */
-    free(namelist);
-}
 
 /******************************************************************************
 Description.: this is the main worker thread
@@ -221,8 +127,8 @@ void *worker_thread(void *arg)
     sd = socket(PF_INET, SOCK_STREAM, 0);
     bzero(&addr, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = inet_addr("124.111.254.155");
-    addr.sin_port = htons(8888);
+    addr.sin_addr.s_addr = inet_addr(host);
+    addr.sin_port = htons(port);
 
     if (connect(sd , (struct sockaddr *)&addr , sizeof(addr)) < 0)
     {
@@ -294,8 +200,8 @@ int output_init(output_parameter *param, int id)
         static struct option long_options[] = {
             {"h", no_argument, 0, 0},
             {"help", no_argument, 0, 0},
-            {"f", required_argument, 0, 0},
-            {"folder", required_argument, 0, 0},
+            {"o", required_argument, 0, 0},
+            {"host", required_argument, 0, 0},
             {"d", required_argument, 0, 0},
             {"delay", required_argument, 0, 0},
             {"s", required_argument, 0, 0},
@@ -304,8 +210,8 @@ int output_init(output_parameter *param, int id)
             {"exceed", required_argument, 0, 0},
             {"i", required_argument, 0, 0},
             {"input", required_argument, 0, 0},
-            {"m", required_argument, 0, 0},
-            {"mjpeg", required_argument, 0, 0},
+            {"p", required_argument, 0, 0},
+            {"port", required_argument, 0, 0},
             {"l", required_argument, 0, 0},
             {"link", required_argument, 0, 0},
             {"c", required_argument, 0, 0},
@@ -333,14 +239,12 @@ int output_init(output_parameter *param, int id)
             return 1;
             break;
 
-            /* f, folder */
+            /* o, host */
         case 2:
         case 3:
             DBG("case 2,3\n");
-            folder = malloc(strlen(optarg) + 1);
-            strcpy(folder, optarg);
-            if(folder[strlen(folder)-1] == '/')
-                folder[strlen(folder)-1] = '\0';
+            host = malloc(strlen(optarg) + 1);
+            strcpy(host, optarg);
             break;
 
             /* d, delay */
@@ -369,11 +273,11 @@ int output_init(output_parameter *param, int id)
             DBG("case 12,13\n");
             input_number = atoi(optarg);
             break;
-            /* m mjpeg */
+            /* p, port*/
         case 12:
         case 13:
             DBG("case 12,13\n");
-            mjpgFileName = strdup(optarg);
+            port = atoi(optarg);
             break;
             /* l link */
         case 14:
@@ -395,30 +299,12 @@ int output_init(output_parameter *param, int id)
         return 1;
     }
 
-    OPRINT("output folder.....: %s\n", folder);
+    OPRINT("output host.....: %s\n", host);
+    OPRINT("output port.....: %d\n", port);
     OPRINT("input plugin.....: %d: %s\n", input_number, pglobal->in[input_number].plugin);
     OPRINT("delay after save..: %d\n", delay);
-    if  (mjpgFileName == NULL) {
-        if(ringbuffer_size > 0) {
-            OPRINT("ringbuffer size...: %d to %d\n", ringbuffer_size, ringbuffer_size + ringbuffer_exceed);
-        } else {
-            OPRINT("ringbuffer size...: %s\n", "no ringbuffer");
-        }
-    } else {
-        char *fnBuffer = malloc(strlen(mjpgFileName) + strlen(folder) + 3);
-        sprintf(fnBuffer, "%s/%s", folder, mjpgFileName);
-
-        OPRINT("output file.......: %s\n", fnBuffer);
-        if((fd = open(fnBuffer, O_CREAT | O_RDWR | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)) < 0) {
-            OPRINT("could not open the file %s\n", fnBuffer);
-            free(fnBuffer);
-            return 1;
-        }
-        free(fnBuffer);
-    }
 
     param->global->out[id].parametercount = 2;
-
     param->global->out[id].out_parameters = (control*) calloc(2, sizeof(control));
 
     control take_ctrl;
